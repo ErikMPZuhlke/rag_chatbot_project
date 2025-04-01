@@ -1,21 +1,29 @@
 import json
 import logging
 import ollama
+import os
 from sys import stdout
 from neo4j import GraphDatabase
 from fastapi import FastAPI
+from logging.handlers import RotatingFileHandler
 from langchain.vectorstores import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 from retrieval.vector_search import EnhancedVectorRetriever
 from retrieval.graph_search import GraphRetriever
-from prompting.HyDE import HYDE_SYSTEM_PROMPT, FINAL_RESPONSE_PROMPT
+from prompting.HyDE import HYDE_SYSTEM_PROMPT, HYDE_REFINEMENT_PROMPT, FINAL_RESPONSE_PROMPT
+
+# Create log directory if it doesn't exist
+log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".debug")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "rag_chatbot.log")
 
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(stdout)
+        logging.StreamHandler(stdout),
+        RotatingFileHandler(log_file, mode='a', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
     ]
 )
 logger = logging.getLogger("rag_chatbot")
@@ -41,16 +49,16 @@ except Exception as e:
     vector_db = None
 
 # Initialize retrievers
-graph_retriever = GraphRetriever(driver, HYDE_SYSTEM_PROMPT)
+graph_retriever = GraphRetriever(driver, HYDE_SYSTEM_PROMPT, HYDE_REFINEMENT_PROMPT)
 
 @app.get("/query/")
-async def query_llm(user_question: str):
+async def query_llm(user_question: str, use_refinement: bool = True):
     """Retrieve related methods/classes & vector search snippets."""
     try:
         logger.info(f"Received query endpoint request: {user_question}")
         
-        # Stage 1: Get structured data from Neo4j using HyDE
-        neo4j_results = graph_retriever.fetch_related_code(user_question)
+        # Stage 1: Get structured data from Neo4j using two-stage HyDE
+        neo4j_results = graph_retriever.fetch_related_code(user_question, use_refinement=use_refinement)
         logger.debug(f"Neo4j results: {json.dumps(neo4j_results, default=str)[:500]}...")
         
         # Process Neo4j results and prepare for ChromaDB
@@ -90,7 +98,7 @@ async def query_llm(user_question: str):
             method_names,
             class_names,
             method_docstrings,
-            k=7
+            k=10
         )
         
         # Format the results for the final prompt
@@ -105,6 +113,7 @@ async def query_llm(user_question: str):
             )
 
             logger.debug(f"Final prompt length: {len(prompt)} characters")
+            logger.debug(f"Final prompt content: {prompt}")
 
         except KeyError as e:
             logger.error(f"Format error in FINAL_RESPONSE_PROMPT: {e}")

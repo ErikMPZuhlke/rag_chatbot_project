@@ -50,8 +50,9 @@ htmlcov/
 *.orig
 *.DS_Store
 
-# Ignore database files
+# Ignore database files and debug logs
 db/
+.debug/
 
 # Ignore legacy code folder (if not needed)
 legacy_code/
